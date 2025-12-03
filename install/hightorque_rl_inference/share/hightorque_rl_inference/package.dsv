@@ -1,0 +1,8 @@
+source;share/hightorque_rl_inference/hook/cmake_prefix_path.ps1
+source;share/hightorque_rl_inference/hook/cmake_prefix_path.dsv
+source;share/hightorque_rl_inference/hook/cmake_prefix_path.sh
+source;share/hightorque_rl_inference/local_setup.bash
+source;share/hightorque_rl_inference/local_setup.dsv
+source;share/hightorque_rl_inference/local_setup.ps1
+source;share/hightorque_rl_inference/local_setup.sh
+source;share/hightorque_rl_inference/local_setup.zsh

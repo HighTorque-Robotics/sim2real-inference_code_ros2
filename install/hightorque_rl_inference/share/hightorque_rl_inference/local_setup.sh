@@ -2,7 +2,7 @@
 
 # since this file is sourced use either the provided AMENT_CURRENT_PREFIX
 # or fall back to the destination set at configure time
-: ${AMENT_CURRENT_PREFIX:="/home/hightorque/zy_workspace/hightorque_rl_custom footstep_ros2/install/hightorque_rl_inference"}
+: ${AMENT_CURRENT_PREFIX:="/home/hightorque/zy_workspace/hightorque_rl_custom_footstep_ros2/install/hightorque_rl_inference"}
 if [ ! -d "$AMENT_CURRENT_PREFIX" ]; then
   if [ -z "$COLCON_CURRENT_PREFIX" ]; then
     echo "The compile time prefix path '$AMENT_CURRENT_PREFIX' doesn't " \

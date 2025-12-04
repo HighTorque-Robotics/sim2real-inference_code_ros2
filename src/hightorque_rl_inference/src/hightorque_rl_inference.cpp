@@ -584,7 +584,8 @@ namespace hightorque_rl_inference
 
                         sensor_msgs::msg::JointState preset;
                         preset.header.frame_id = "zero";
-                        preset.header.stamp = this->now();
+                        preset.header.stamp.sec = static_cast<uint32_t>(reset_duration);
+                        preset.header.stamp.nanosec = 0;
 
                         presetPub_->publish(preset);
                         auto sleep_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(

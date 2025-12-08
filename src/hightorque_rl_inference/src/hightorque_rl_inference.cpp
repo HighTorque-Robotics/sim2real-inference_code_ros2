@@ -268,11 +268,16 @@ namespace hightorque_rl_inference
 
     bool HighTorqueRLInference::init()
     {
-        std::string topicName = "/" + modelType_ + "_all";
-        jointCmdPub_ = this->create_publisher<sensor_msgs::msg::JointState>(topicName, 1000);
-
         std::string presetTopic = "/" + modelType_ + "_preset";
-        presetPub_ = this->create_publisher<sensor_msgs::msg::JointState>(presetTopic, 10);
+        // auto preset_qos = rclcpp::QoS(10).reliable().durability_volatile();
+        auto preset_qos = rclcpp::QoS(10);
+        presetPub_ = this->create_publisher<std_msgs::msg::String>(presetTopic, preset_qos);
+
+        std::string topicName = "/" + modelType_ + "_all";
+        // auto cmd_qos = rclcpp::QoS(1000).best_effort().durability_volatile();
+        auto cmd_qos = rclcpp::QoS(10);
+        
+        jointCmdPub_ = this->create_publisher<sensor_msgs::msg::JointState>(topicName, cmd_qos);
 
         robotStateSub_ = this->create_subscription<sensor_msgs::msg::JointState>(
             "/rbt_state", 100,
@@ -582,10 +587,8 @@ namespace hightorque_rl_inference
                         double reset_duration = 2.0;
                         this->get_parameter_or<double>("reset_duration", reset_duration, reset_duration);
 
-                        sensor_msgs::msg::JointState preset;
-                        preset.header.frame_id = "zero";
-                        preset.header.stamp.sec = static_cast<uint32_t>(reset_duration);
-                        preset.header.stamp.nanosec = 0;
+                        std_msgs::msg::String preset;
+                        preset.data = "zero:" + std::to_string(reset_duration);
 
                         presetPub_->publish(preset);
                         auto sleep_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -620,10 +623,10 @@ namespace hightorque_rl_inference
             }
 
             sensor_msgs::msg::JointState msg;
-            // 保持与原 ROS1 行为一致：stamp 为 0，frame_id 为空
+            msg.header.stamp = this->now();
+            msg.header.frame_id = "";
 
             msg.position.resize(22);
-            // 根据状态决定 action 缩放因子：RUNNING 时用 actionScale_，其他状态用 0.05
             double scale = (currentState_ == RUNNING) ? actionScale_ : 0.05;
 
             for (int i = 0; i < 12; ++i)

@@ -6,6 +6,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/joy.hpp>
 #include <geometry_msgs/msg/twist.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <Eigen/Dense>
 #include <memory>
 #include <deque>
@@ -42,7 +43,7 @@ namespace hightorque_rl_inference
             static void joyCallback(const sensor_msgs::msg::Joy::SharedPtr msg);
 
             rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr jointCmdPub_;
-            rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr presetPub_;
+            rclcpp::Publisher<std_msgs::msg::String>::SharedPtr presetPub_;
             rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr robotStateSub_;
             rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr motorStateSub_;
             rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imuSub_;

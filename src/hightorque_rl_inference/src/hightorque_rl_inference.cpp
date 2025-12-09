@@ -299,7 +299,7 @@ namespace hightorque_rl_inference
             joy_topic, 10,
             &HighTorqueRLInference::joyCallback);
 
-        rlPathClient_ = this->create_client<hightorque_rl_inference::srv::Common>("/develop/rl_path");
+        rlPathClient_ = this->create_client<sim2real_msg_ros2::srv::Common>("/develop/rl_path");
 
         if (!loadPolicy())
         {
@@ -559,9 +559,9 @@ namespace hightorque_rl_inference
         }
 
         RCLCPP_INFO(this->get_logger(), "调用 /develop/rl_path service...");
-        auto request = std::make_shared<hightorque_rl_inference::srv::Common::Request>();
+        auto request = std::make_shared<sim2real_msg_ros2::srv::Common::Request>();
         request->enable = true;
-        request->str = "/home/hightorque/workspace/sim2real_master_ros2/src/sim2real_master_ros2/src/sim2real_master/config/walk/devel_control.yaml";
+        request->str = "/home/hightorque/zy_workspace/sim2real_master_ros2/src/sim2real_master_ros2/src/sim2real_master/config/walk/devel_control.yaml";
         auto result = rlPathClient_->async_send_request(request);
 
         if (rclcpp::spin_until_future_complete(this->get_node_base_interface(), result) == 

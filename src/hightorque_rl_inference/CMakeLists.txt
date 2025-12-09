@@ -18,13 +18,13 @@ project(hightorque_rl_inference)
 add_compile_options(-std=c++17)
 
 find_package(ament_cmake REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(rosgraph_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(sim2real_msg_ros2 REQUIRED)
 
 find_package(Eigen3 REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -42,11 +42,6 @@ include_directories(
 link_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib)
 set(INFERENCE_LIBS rknnrt)
 
-rosidl_generate_interfaces(${PROJECT_NAME}
-  "srv/Common.srv"
-  DEPENDENCIES std_msgs
-)
-
 add_library(${PROJECT_NAME}_lib
   src/hightorque_rl_inference.cpp
 )
@@ -63,10 +58,7 @@ ament_target_dependencies(${PROJECT_NAME}_lib
   std_msgs
   rosgraph_msgs
   ament_index_cpp
-)
-
-rosidl_target_interfaces(${PROJECT_NAME}_lib
-  ${PROJECT_NAME} "rosidl_typesupport_cpp"
+  sim2real_msg_ros2
 )
 
 add_executable(${PROJECT_NAME}_node
@@ -84,10 +76,7 @@ ament_target_dependencies(${PROJECT_NAME}_node
   std_msgs
   rosgraph_msgs
   ament_index_cpp
-)
-
-rosidl_target_interfaces(${PROJECT_NAME}_node
-  ${PROJECT_NAME} "rosidl_typesupport_cpp"
+  sim2real_msg_ros2
 )
 
 install(TARGETS

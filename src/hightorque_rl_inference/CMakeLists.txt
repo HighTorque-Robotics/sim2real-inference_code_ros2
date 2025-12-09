@@ -18,6 +18,7 @@ project(hightorque_rl_inference)
 add_compile_options(-std=c++17)
 
 find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -41,16 +42,21 @@ include_directories(
 link_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib)
 set(INFERENCE_LIBS rknnrt)
 
-add_library(${PROJECT_NAME}
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "srv/Common.srv"
+  DEPENDENCIES std_msgs
+)
+
+add_library(${PROJECT_NAME}_lib
   src/hightorque_rl_inference.cpp
 )
 
-target_link_libraries(${PROJECT_NAME}
+target_link_libraries(${PROJECT_NAME}_lib
   ${INFERENCE_LIBS}
   ${YAMLCPP_LIBRARIES}
 )
 
-ament_target_dependencies(${PROJECT_NAME}
+ament_target_dependencies(${PROJECT_NAME}_lib
   rclcpp
   sensor_msgs
   geometry_msgs
@@ -59,12 +65,16 @@ ament_target_dependencies(${PROJECT_NAME}
   ament_index_cpp
 )
 
+rosidl_target_interfaces(${PROJECT_NAME}_lib
+  ${PROJECT_NAME} "rosidl_typesupport_cpp"
+)
+
 add_executable(${PROJECT_NAME}_node
   src/main.cpp
 )
 
 target_link_libraries(${PROJECT_NAME}_node
-  ${PROJECT_NAME}
+  ${PROJECT_NAME}_lib
 )
 
 ament_target_dependencies(${PROJECT_NAME}_node
@@ -76,8 +86,12 @@ ament_target_dependencies(${PROJECT_NAME}_node
   ament_index_cpp
 )
 
+rosidl_target_interfaces(${PROJECT_NAME}_node
+  ${PROJECT_NAME} "rosidl_typesupport_cpp"
+)
+
 install(TARGETS
-  ${PROJECT_NAME}
+  ${PROJECT_NAME}_lib
   ${PROJECT_NAME}_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -100,6 +114,8 @@ install(FILES
 install(DIRECTORY policy/
   DESTINATION share/${PROJECT_NAME}/policy
 )
+
+ament_export_dependencies(rosidl_default_runtime)
 
 ament_package()
 

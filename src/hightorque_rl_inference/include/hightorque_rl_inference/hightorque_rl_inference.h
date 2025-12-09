@@ -7,6 +7,7 @@
 #include <sensor_msgs/msg/joy.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <std_msgs/msg/string.hpp>
+#include "hightorque_rl_inference/srv/common.hpp"
 #include <Eigen/Dense>
 #include <memory>
 #include <deque>
@@ -49,6 +50,7 @@ namespace hightorque_rl_inference
             rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imuSub_;
             rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmdVelSub_;
             rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joySub_;
+            rclcpp::Client<hightorque_rl_inference::srv::Common>::SharedPtr rlPathClient_;
 
             std::string modelType_;
             std::string policyPath_;

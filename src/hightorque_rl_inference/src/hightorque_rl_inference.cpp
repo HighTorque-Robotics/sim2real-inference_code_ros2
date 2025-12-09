@@ -299,6 +299,8 @@ namespace hightorque_rl_inference
             joy_topic, 10,
             &HighTorqueRLInference::joyCallback);
 
+        rlPathClient_ = this->create_client<hightorque_rl_inference::srv::Common>("/develop/rl_path");
+
         if (!loadPolicy())
         {
             return false;
@@ -549,6 +551,40 @@ namespace hightorque_rl_inference
 
     void HighTorqueRLInference::run()
     {
+        RCLCPP_INFO(this->get_logger(), "等待外部service /develop/rl_path 可用...");
+        if (!rlPathClient_->wait_for_service(std::chrono::seconds(10)))
+        {
+            RCLCPP_ERROR(this->get_logger(), "Service /develop/rl_path 超时未响应");
+            return;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "调用 /develop/rl_path service...");
+        auto request = std::make_shared<hightorque_rl_inference::srv::Common::Request>();
+        request->enable = true;
+        request->str = "/home/hightorque/workspace/sim2real_master_ros2/src/sim2real_master_ros2/src/sim2real_master/config/walk/devel_control.yaml";
+        auto result = rlPathClient_->async_send_request(request);
+
+        if (rclcpp::spin_until_future_complete(this->get_node_base_interface(), result) == 
+            rclcpp::FutureReturnCode::SUCCESS)
+        {
+            auto response = result.get();
+            if (response->result)
+            {
+                RCLCPP_INFO(this->get_logger(), "Service调用成功: %s", response->message.c_str());
+            }
+            else
+            {
+                RCLCPP_ERROR(this->get_logger(), "Service调用失败: %s", response->error_message.c_str());
+                return;
+            }
+        }
+        else
+        {
+            RCLCPP_ERROR(this->get_logger(), "无法调用 /develop/rl_path service");
+            return;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "开始主循环...");
         rclcpp::Rate rate(rlCtrlFreq_);
         static rclcpp::Time lastTrigger(0, 0, RCL_ROS_TIME);
 

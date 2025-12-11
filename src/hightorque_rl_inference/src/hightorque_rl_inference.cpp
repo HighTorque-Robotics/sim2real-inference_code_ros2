@@ -29,6 +29,7 @@
 #include <cstring>
 #include <atomic>
 #include <sstream>
+#include <limits>
 #include <yaml-cpp/yaml.h>
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -269,21 +270,20 @@ namespace hightorque_rl_inference
     bool HighTorqueRLInference::init()
     {
         std::string presetTopic = "/" + modelType_ + "_preset";
-        // auto preset_qos = rclcpp::QoS(10).reliable().durability_volatile();
-        auto preset_qos = rclcpp::QoS(10);
-        presetPub_ = this->create_publisher<std_msgs::msg::String>(presetTopic, preset_qos);
+        // auto presetQos = rclcpp::QoS(10).reliable().durability_volatile();
+        auto presetQos = rclcpp::QoS(10);
+        presetPub_ = this->create_publisher<std_msgs::msg::String>(presetTopic, presetQos);
 
         std::string topicName = "/" + modelType_ + "_all";
-        // auto cmd_qos = rclcpp::QoS(1000).best_effort().durability_volatile();
-        auto cmd_qos = rclcpp::QoS(10);
+        auto cmdQos = rclcpp::QoS(1000).best_effort().durability_volatile();
         
-        jointCmdPub_ = this->create_publisher<sensor_msgs::msg::JointState>(topicName, cmd_qos);
+        jointCmdPub_ = this->create_publisher<sensor_msgs::msg::JointState>(topicName, cmdQos);
 
         robotStateSub_ = this->create_subscription<sensor_msgs::msg::JointState>(
-            "/rbt_state", 100,
+            "/sim2real_master_node/rbt_state", 100,
             std::bind(&HighTorqueRLInference::robotStateCallback, this, std::placeholders::_1));
         motorStateSub_ = this->create_subscription<sensor_msgs::msg::JointState>(
-            "/mtr_state", 100,
+            "/sim2real_master_node/mtr_state", 100,
             std::bind(&HighTorqueRLInference::motorStateCallback, this, std::placeholders::_1));
         imuSub_ = this->create_subscription<sensor_msgs::msg::Imu>(
             "/yesense_imu/imu", 100,

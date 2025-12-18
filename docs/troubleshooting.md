@@ -80,11 +80,7 @@ E RKNN: parseRKNN from buffer: Invalid RKNN format!
    ```
    Should match an actual `.rknn` file in `policy/` directory
 
-3. **Convert PyTorch model to RKNN:**
-   - If you have a `.pt` or `.pth` file, you need to convert it
-   - See [Development Guide](development.md#model-conversion) for conversion steps
-
-4. **Re-download or re-convert model** if corrupted
+3. **Re-download or re-convert model** if corrupted
 
 ---
 
@@ -318,43 +314,6 @@ rostopic hz /pi_plus_all
 
 All should be publishing at expected rates.
 
-### Monitor system resources
-
-```bash
-htop
-```
-
-Check CPU and memory usage. RKNN inference should use minimal CPU.
-
-### Test with minimal config
-
-Create a minimal `config_test.yaml` with conservative settings:
-```yaml
-num_actions: 12
-num_single_obs: 36
-frame_stack: 1
-action_scale: 0.3  # Very conservative
-clip_obs: 18.0
-policy_name: "your_model.rknn"
-dt: 0.001
-decimation: 10
-# ... rest with defaults
-```
-
----
-
-## Getting Help
-
-If issues persist:
-
-1. **Check GitHub Issues**: [Repository Issues](https://github.com/HighTorque-Robotics/hightorque_rl_custom/issues)
-2. **Collect information**:
-   - ROS version: `rosversion -d`
-   - Package version: `rospack find hightorque_rl_inference`
-   - Config file contents
-   - Full error log
-3. **Contact support**: support@hightorque-robotics.com
-
 ---
 
 ## 中文
@@ -431,11 +390,7 @@ E RKNN: parseRKNN from buffer: Invalid RKNN format!
    ```
    应匹配 `policy/` 目录中的实际 `.rknn` 文件
 
-3. **将 PyTorch 模型转换为 RKNN：**
-   - 如果您有 `.pt` 或 `.pth` 文件，需要进行转换
-   - 参见[开发指南](development.md#模型转换)了解转换步骤
-
-4. **如果损坏，重新下载或重新转换模型**
+3. **如果损坏，重新下载或重新转换模型**
 
 ---
 
@@ -669,44 +624,6 @@ rostopic hz /pi_plus_all
 
 所有话题应以预期频率发布。
 
-### 监控系统资源
-
-```bash
-htop
-```
-
-检查 CPU 和内存使用情况。RKNN 推理应使用最少的 CPU。
-
-### 使用最小配置测试
-
-创建一个保守设置的最小 `config_test.yaml`：
-```yaml
-num_actions: 12
-num_single_obs: 36
-frame_stack: 1
-action_scale: 0.3  # 非常保守
-clip_obs: 18.0
-policy_name: "your_model.rknn"
-dt: 0.001
-decimation: 10
-# ... 其余使用默认值
-```
-
----
-
-## 获取帮助
-
-如果问题仍然存在：
-
-1. **检查 GitHub Issues**：[仓库问题](https://github.com/HighTorque-Robotics/hightorque_rl_custom/issues)
-2. **收集信息**：
-   - ROS 版本：`rosversion -d`
-   - 功能包版本：`rospack find hightorque_rl_inference`
-   - 配置文件内容
-   - 完整错误日志
-3. **联系支持**：support@hightorque-robotics.com
-
----
 
 **高擎机电（HighTorque Robotics）**  
 **最后更新**：2025年11月

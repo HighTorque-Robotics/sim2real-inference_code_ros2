@@ -23,8 +23,8 @@ rbt_lin_vel_scale: 1.0
 rbt_ang_vel_scale: 1.0
 
 # 速度命令限制（与训练时保持一致）
-cmd_vel_x_min: -0.15
-cmd_vel_x_max: 0.15
+cmd_vel_x_min: -0.60
+cmd_vel_x_max: 0.60
 cmd_vel_y_min: -0.20
 cmd_vel_y_max: 0.20
 cmd_vel_yaw_min: -2.00

@@ -13,6 +13,8 @@
 #include <memory>
 #include <deque>
 #include <shared_mutex>
+#include <mutex>
+#include <atomic>
 #include <vector>
 
 #ifdef PLATFORM_ARM
@@ -33,17 +35,23 @@ namespace hightorque_rl_inference
             void stop() { quit_ = true; }
 
         private:
+            // ===== 核心功能函数 / Core Functions =====
             bool loadPolicy();
             void updateObservation();
             void updateAction();
             void quat2euler();
-
+            
+            // ===== 回调函数 / Callback Functions =====
             void robotStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
             void motorStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
             void imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg);
             void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
             void joyCallback(const sensor_msgs::msg::Joy::SharedPtr msg);
+            
+            // ===== 控制循环定时器回调 / Control Loop Timer Callback =====
+            void controlLoopCallback();
 
+            // ===== ROS2 发布者和订阅者 / Publishers and Subscribers =====
             rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr jointCmdPub_;
             rclcpp::Publisher<std_msgs::msg::String>::SharedPtr presetPub_;
             rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr obsPub_;
@@ -54,6 +62,14 @@ namespace hightorque_rl_inference
             rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmdVelSub_;
             rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joySub_;
             rclcpp::Client<sim2real_msg_ros2::srv::Common>::SharedPtr rlPathClient_;
+            
+            // ===== 定时器 / Timer =====
+            rclcpp::TimerBase::SharedPtr controlTimer_;
+            
+            // ===== 回调组（用于多线程） / Callback Groups (for multi-threading) =====
+            rclcpp::CallbackGroup::SharedPtr sensorCallbackGroup_;    // 传感器数据（IMU、关节状态）
+            rclcpp::CallbackGroup::SharedPtr controlCallbackGroup_;   // 控制循环
+            rclcpp::CallbackGroup::SharedPtr commandCallbackGroup_;   // 指令输入（cmd_vel、joy）
 
             std::string modelType_;
             std::string policyPath_;
@@ -80,20 +96,26 @@ namespace hightorque_rl_inference
             std::vector<float> clipActionsLower_;
             std::vector<float> clipActionsUpper_;
 
+            // ===== 机器人状态数据（需要线程保护） / Robot State Data (thread-protected) =====
             // Robot关节数据（相对位置，来自rbt_state话题）
             Eigen::VectorXd robotJointPositions_;
             Eigen::VectorXd robotJointVelocities_;
+            std::mutex robotStateMutex_;  // 保护robotJointPositions_和robotJointVelocities_
 
             // Motor关节数据（绝对角度，来自mtr_state话题，用于策略推理）
             Eigen::VectorXd motorJointPositions_;
             Eigen::VectorXd motorJointVelocities_;
-            std::shared_timed_mutex mutex_; // 数据互斥锁
+            std::mutex motorStateMutex_;  // 保护motorJointPositions_和motorJointVelocities_
 
+            // IMU数据
             Eigen::Quaterniond quat_;
             Eigen::Vector3d eulerAngles_;
             Eigen::Vector3d baseAngVel_;
+            std::mutex imuMutex_;  // 保护quat_, eulerAngles_, baseAngVel_
 
+            // 速度指令
             Eigen::Vector3d command_;
+            std::mutex commandMutex_;  // 保护command_
 
             Eigen::VectorXd observations_;
             std::deque<Eigen::VectorXd> histObs_;
@@ -107,11 +129,13 @@ namespace hightorque_rl_inference
 
             double stepsPeriod_;
             double step_;
+            std::mutex stepMutex_;  // 保护step_
 
-            bool quit_;
-            bool stateReceived_;
-            bool imuReceived_;
+            std::atomic<bool> quit_;
+            std::atomic<bool> stateReceived_;
+            std::atomic<bool> imuReceived_;
             rclcpp::Time lastTrigger_;
+            std::mutex triggerMutex_;  // 保护lastTrigger_
 
 #ifdef PLATFORM_ARM
             rknn_context ctx_{};

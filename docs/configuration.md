@@ -177,13 +177,6 @@ cmd_lin_vel_scale: 0.8
 cmd_ang_vel_scale: 1.0
 ```
 
-### Aggressive (Fast Response)
-```yaml
-action_scale: 1.2
-cmd_lin_vel_scale: 1.5
-cmd_ang_vel_scale: 1.5
-```
-
 ### Multi-Policy Setup
 You can maintain multiple configuration files:
 ```bash
@@ -368,13 +361,6 @@ Load different configs by modifying the launch file:
 action_scale: 0.5
 cmd_lin_vel_scale: 0.8
 cmd_ang_vel_scale: 1.0
-```
-
-### 激进模式（快速响应）
-```yaml
-action_scale: 1.2
-cmd_lin_vel_scale: 1.5
-cmd_ang_vel_scale: 1.5
 ```
 
 ### 多策略设置

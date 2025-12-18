@@ -2,13 +2,15 @@
 
 **Developed by 高擎机电 (HighTorque Robotics)**
 
+**ROS2 Version:** Foxy Fitzroy
+
 [English](#english) | [中文](#中文)
 
 ---
 
 ## English
 
-This guide explains how to extend and modify the HighTorque RL Custom Inference Demo for your own robotics projects.
+This guide explains how to extend and modify the HighTorque RL Inference Demo for your own robotics projects.
 
 ### Project Structure
 
@@ -18,14 +20,10 @@ src/hightorque_rl_inference/
 ├── package.xml             # Package metadata
 ├── config_example.yaml     # Runtime configuration
 ├── include/
-│   ├── hightorque_rl_inference/
-│   │   └── hightorque_rl_inference.h    # Main class declaration
-│   └── rknn/
-│       └── rknn_api.h          # RKNN API headers
+│   └── hightorque_rl_inference/
+│       └── hightorque_rl_inference.h    # Main class declaration
 ├── launch/
-│   └── hightorque_rl_inference.launch   # Launch file
-├── lib/
-│   └── librknnrt.so            # RKNN runtime library
+│   └── hightorque_rl_inference.launch.py   # Launch file
 ├── policy/
 │   └── *.rknn                  # RKNN model files
 └── src/
@@ -35,7 +33,7 @@ src/hightorque_rl_inference/
 
 ### Key Classes and Functions
 
-#### InferenceDemo Class
+#### HighTorqueRLInference Class
 
 The main class handling RL inference:
 
@@ -47,11 +45,11 @@ The main class handling RL inference:
 - `ctx_`: RKNN inference context
 
 **Key Methods:**
-- `init()`: Initialize ROS topics and load policy
+- `init()`: Initialize ROS2 topics and load policy
 - `loadPolicy()`: Load RKNN model from file
 - `updateObservation()`: Build observation vector
 - `updateAction()`: Run inference to generate actions
-- `run()`: Main control loop
+- `run()`: Start control loop timer
 
 ---
 
@@ -78,15 +76,22 @@ observations_[32:34] = base orientation    // Euler angles
    num_single_obs: 39  # Was 36, now 36+3
    ```
 
-2. **Subscribe to additional topic** in `InferenceDemo` constructor:
+2. **Add member variable in header file** (`hightorque_rl_inference.h`):
    ```cpp
-   baseVelSub_ = nh_->subscribe("/base_velocity", 10, 
-       &InferenceDemo::baseVelCallback, this);
+   Eigen::Vector3d baseLinVel_;
+   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr baseVelSub_;
    ```
 
-3. **Add callback to store data:**
+3. **Subscribe to additional topic** in `init()` function:
    ```cpp
-   void InferenceDemo::baseVelCallback(const geometry_msgs::TwistConstPtr& msg)
+   baseVelSub_ = this->create_subscription<geometry_msgs::msg::Twist>(
+       "/base_velocity", 10,
+       std::bind(&HighTorqueRLInference::baseVelCallback, this, std::placeholders::_1));
+   ```
+
+4. **Add callback to store data:**
+   ```cpp
+   void HighTorqueRLInference::baseVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
    {
        baseLinVel_(0) = msg->linear.x;
        baseLinVel_(1) = msg->linear.y;
@@ -94,9 +99,9 @@ observations_[32:34] = base orientation    // Euler angles
    }
    ```
 
-4. **Update `updateObservation()` function:**
+5. **Update `updateObservation()` function:**
    ```cpp
-   void InferenceDemo::updateObservation()
+   void HighTorqueRLInference::updateObservation()
    {
        // ... existing observations ...
        
@@ -109,7 +114,7 @@ observations_[32:34] = base orientation    // Euler angles
    }
    ```
 
-5. **Retrain your policy** with the new observation space
+6. **Retrain your policy** with the new observation space
 
 ---
 
@@ -134,9 +139,19 @@ observations_[32:34] = base orientation    // Euler angles
    clip_actions_upper: [1.00, ..., 1.0]    # Add gripper upper
    ```
 
-3. **Modify `run()` function** to handle gripper action:
+3. **Add publisher in header file:**
    ```cpp
-   void InferenceDemo::run()
+   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr gripperPub_;
+   ```
+
+4. **Initialize publisher in `init()` function:**
+   ```cpp
+   gripperPub_ = this->create_publisher<std_msgs::msg::Float64>("/gripper_cmd", 10);
+   ```
+
+5. **Modify `controlLoopCallback()` function** to handle gripper action:
+   ```cpp
+   void HighTorqueRLInference::controlLoopCallback()
    {
        // ... existing code ...
        
@@ -144,9 +159,9 @@ observations_[32:34] = base orientation    // Euler angles
        double gripperCmd = action_[12];
        
        // Publish gripper command
-       std_msgs::Float64 gripperMsg;
+       std_msgs::msg::Float64 gripperMsg;
        gripperMsg.data = gripperCmd;
-       gripperPub_.publish(gripperMsg);
+       gripperPub_->publish(gripperMsg);
    }
    ```
 
@@ -245,16 +260,15 @@ rknn.export_rknn('policy_quantized.rknn')
 
 Add to `updateObservation()`:
 ```cpp
-void InferenceDemo::updateObservation()
+void HighTorqueRLInference::updateObservation()
 {
     // ... build observations ...
     
     // Debug print
-    std::cout << "Obs: ";
+    RCLCPP_DEBUG(this->get_logger(), "Observations:");
     for (int i = 0; i < numSingleObs_; ++i) {
-        std::cout << observations_[i] << " ";
+        RCLCPP_DEBUG(this->get_logger(), "  [%d] = %.4f", i, observations_[i]);
     }
-    std::cout << std::endl;
 }
 ```
 
@@ -262,82 +276,50 @@ void InferenceDemo::updateObservation()
 
 Add to `updateAction()`:
 ```cpp
-void InferenceDemo::updateAction()
+void HighTorqueRLInference::updateAction()
 {
     // ... run inference ...
     
     // Debug print
-    ROS_INFO_STREAM("Actions: " << action_.transpose());
+    std::stringstream ss;
+    ss << "Actions: ";
+    for (int i = 0; i < numActions_; ++i) {
+        ss << action_[i] << " ";
+    }
+    RCLCPP_DEBUG(this->get_logger(), "%s", ss.str().c_str());
 }
 ```
 
-### 3. Visualize Observations in RViz
+### 3. Visualize Observations
 
-Publish observations as a custom message:
-```cpp
-// In run() function
-std_msgs::Float64MultiArray obsMsg;
-obsMsg.data.assign(observations_.data(), 
-                   observations_.data() + observations_.size());
-obsPub_.publish(obsMsg);
+Observations are already published to `/rl_observation` topic. You can monitor them:
+```bash
+ros2 topic echo /rl_observation
 ```
 
 ### 4. Record Data for Analysis
 
 ```bash
 # Record all relevant topics
-rosbag record /sim2real_master_node/rbt_state \
-              /sim2real_master_node/mtr_state \
-              /imu/data \
-              /cmd_vel \
-              /pi_plus_all \
-              -O test_run.bag
+ros2 bag record /sim2real_master_node/rbt_state \
+                /sim2real_master_node/mtr_state \
+                /yesense_imu/imu \
+                /cmd_vel \
+                /pi_plus_all \
+                /rl_observation \
+                /rl_action
 
 # Play back later
-rosbag play test_run.bag
+ros2 bag play <bag_name>
 ```
 
----
+### 5. Performance Profiling
 
-## Testing Best Practices
-
-### 1. Unit Testing
-
-Create test files in `test/` directory:
-
-```cpp
-// test/test_observation.cpp
-#include <gtest/gtest.h>
-#include "hightorque_rl_inference/hightorque_rl_inference.h"
-
-TEST(InferenceDemoTest, ObservationSize)
-{
-    // Test observation vector has correct size
-    auto nh = std::make_shared<ros::NodeHandle>();
-    InferenceDemo demo(nh);
-    
-    EXPECT_EQ(demo.getObservationSize(), 36);
-}
-
-// Add to CMakeLists.txt
-catkin_add_gtest(${PROJECT_NAME}_test test/test_observation.cpp)
-```
-
-### 2. Integration Testing
-
-Test on robot hardware:
-1. Start in STANDBY mode
-2. Verify all joints receive commands
-3. Check for unexpected oscillations
-4. Test state transitions
-5. Test emergency stop
-
-### 3. Performance Profiling
-
+Add timing to measure inference performance:
 ```cpp
 #include <chrono>
 
-void InferenceDemo::updateAction()
+void HighTorqueRLInference::updateAction()
 {
     auto start = std::chrono::high_resolution_clock::now();
     
@@ -345,57 +327,51 @@ void InferenceDemo::updateAction()
     
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-    ROS_INFO("Inference time: %ld μs", duration.count());
+    RCLCPP_DEBUG(this->get_logger(), "Inference time: %ld μs", duration.count());
 }
 ```
 
 ---
 
-## Contributing
+## Testing Best Practices
 
-### Code Style
+### 1. Test in STANDBY Mode First
 
-- Follow [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html)
-- Use meaningful variable names
-- Add Doxygen comments for all functions
-- Keep functions < 50 lines when possible
+Always start testing in STANDBY mode (uses minimal action scale 0.05):
+1. Launch the node
+2. Press `LT + RT + START` to enter STANDBY
+3. Observe robot behavior
+4. Check for unexpected movements
+5. Verify all joints receive commands
 
-### Commit Messages
+### 2. Gradual Testing
 
+1. Start with low `action_scale` (0.3-0.5)
+2. Test basic standing/balancing
+3. Gradually increase `action_scale`
+4. Test velocity commands at slow speeds first
+5. Only switch to RUNNING mode after STANDBY tests pass
+
+### 3. Monitor Topics
+
+Use these commands to monitor system:
+```bash
+# Check topic rates
+ros2 topic hz /sim2real_master_node/rbt_state
+ros2 topic hz /pi_plus_all
+
+# Monitor joint commands
+ros2 topic echo /pi_plus_all
+
+# Check observations
+ros2 topic echo /rl_observation
 ```
-[Component] Brief description
-
-Detailed explanation of what changed and why.
-
-Fixes #issue_number
-```
-
-Example:
-```
-[Observation] Add base linear velocity to observation space
-
-- Added baseVelSub_ subscriber
-- Updated updateObservation() to include linear velocity
-- Increased num_single_obs to 39
-
-Fixes #42
-```
-
-### Pull Request Process
-
-1. Fork the repository
-2. Create feature branch: `git checkout -b feature/your-feature`
-3. Make changes and test thoroughly
-4. Update documentation
-5. Commit with clear messages
-6. Push to your fork
-7. Open pull request with description
 
 ---
 
 ## 中文
 
-本指南解释如何扩展和修改 HighTorque RL 自定义推理演示以用于您自己的机器人项目。
+本指南解释如何扩展和修改 HighTorque RL 推理演示以用于您自己的机器人项目。
 
 ### 项目结构
 
@@ -405,14 +381,10 @@ src/hightorque_rl_inference/
 ├── package.xml             # 包元数据
 ├── config_example.yaml     # 运行时配置
 ├── include/
-│   ├── hightorque_rl_inference/
-│   │   └── hightorque_rl_inference.h    # 主类声明
-│   └── rknn/
-│       └── rknn_api.h          # RKNN API 头文件
+│   └── hightorque_rl_inference/
+│       └── hightorque_rl_inference.h    # 主类声明
 ├── launch/
-│   └── hightorque_rl_inference.launch   # 启动文件
-├── lib/
-│   └── librknnrt.so            # RKNN 运行时库
+│   └── hightorque_rl_inference.launch.py   # 启动文件
 ├── policy/
 │   └── *.rknn                  # RKNN 模型文件
 └── src/
@@ -422,7 +394,7 @@ src/hightorque_rl_inference/
 
 ### 关键类和函数
 
-#### InferenceDemo 类
+#### HighTorqueRLInference 类
 
 处理 RL 推理的主类：
 
@@ -434,11 +406,11 @@ src/hightorque_rl_inference/
 - `ctx_`：RKNN 推理上下文
 
 **关键方法：**
-- `init()`：初始化 ROS 话题并加载策略
+- `init()`：初始化 ROS2 话题并加载策略
 - `loadPolicy()`：从文件加载 RKNN 模型
 - `updateObservation()`：构建观测向量
 - `updateAction()`：运行推理以生成动作
-- `run()`：主控制循环
+- `run()`：启动控制循环定时器
 
 ---
 
@@ -465,15 +437,22 @@ observations_[32:34] = base orientation    // 欧拉角
    num_single_obs: 39  # 原来是 36，现在 36+3
    ```
 
-2. **在 `InferenceDemo` 构造函数中订阅额外话题：**
+2. **在头文件中添加成员变量** (`hightorque_rl_inference.h`):
    ```cpp
-   baseVelSub_ = nh_->subscribe("/base_velocity", 10, 
-       &InferenceDemo::baseVelCallback, this);
+   Eigen::Vector3d baseLinVel_;
+   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr baseVelSub_;
    ```
 
-3. **添加回调以存储数据：**
+3. **在 `init()` 函数中订阅额外话题：**
    ```cpp
-   void InferenceDemo::baseVelCallback(const geometry_msgs::TwistConstPtr& msg)
+   baseVelSub_ = this->create_subscription<geometry_msgs::msg::Twist>(
+       "/base_velocity", 10,
+       std::bind(&HighTorqueRLInference::baseVelCallback, this, std::placeholders::_1));
+   ```
+
+4. **添加回调以存储数据：**
+   ```cpp
+   void HighTorqueRLInference::baseVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
    {
        baseLinVel_(0) = msg->linear.x;
        baseLinVel_(1) = msg->linear.y;
@@ -481,9 +460,9 @@ observations_[32:34] = base orientation    // 欧拉角
    }
    ```
 
-4. **更新 `updateObservation()` 函数：**
+5. **更新 `updateObservation()` 函数：**
    ```cpp
-   void InferenceDemo::updateObservation()
+   void HighTorqueRLInference::updateObservation()
    {
        // ... 现有观测 ...
        
@@ -496,7 +475,7 @@ observations_[32:34] = base orientation    // 欧拉角
    }
    ```
 
-5. **使用新观测空间重新训练策略**
+6. **使用新观测空间重新训练策略**
 
 ---
 
@@ -521,9 +500,19 @@ observations_[32:34] = base orientation    // 欧拉角
    clip_actions_upper: [1.00, ..., 1.0]    # 添加夹爪上限
    ```
 
-3. **修改 `run()` 函数**以处理夹爪动作：
+3. **在头文件中添加发布者：**
    ```cpp
-   void InferenceDemo::run()
+   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr gripperPub_;
+   ```
+
+4. **在 `init()` 函数中初始化发布者：**
+   ```cpp
+   gripperPub_ = this->create_publisher<std_msgs::msg::Float64>("/gripper_cmd", 10);
+   ```
+
+5. **修改 `controlLoopCallback()` 函数**以处理夹爪动作：
+   ```cpp
+   void HighTorqueRLInference::controlLoopCallback()
    {
        // ... 现有代码 ...
        
@@ -531,9 +520,9 @@ observations_[32:34] = base orientation    // 欧拉角
        double gripperCmd = action_[12];
        
        // 发布夹爪命令
-       std_msgs::Float64 gripperMsg;
+       std_msgs::msg::Float64 gripperMsg;
        gripperMsg.data = gripperCmd;
-       gripperPub_.publish(gripperMsg);
+       gripperPub_->publish(gripperMsg);
    }
    ```
 
@@ -632,16 +621,15 @@ rknn.export_rknn('policy_quantized.rknn')
 
 添加到 `updateObservation()`：
 ```cpp
-void InferenceDemo::updateObservation()
+void HighTorqueRLInference::updateObservation()
 {
     // ... 构建观测 ...
     
     // 调试打印
-    std::cout << "Obs: ";
+    RCLCPP_DEBUG(this->get_logger(), "Observations:");
     for (int i = 0; i < numSingleObs_; ++i) {
-        std::cout << observations_[i] << " ";
+        RCLCPP_DEBUG(this->get_logger(), "  [%d] = %.4f", i, observations_[i]);
     }
-    std::cout << std::endl;
 }
 ```
 
@@ -649,82 +637,50 @@ void InferenceDemo::updateObservation()
 
 添加到 `updateAction()`：
 ```cpp
-void InferenceDemo::updateAction()
+void HighTorqueRLInference::updateAction()
 {
     // ... 运行推理 ...
     
     // 调试打印
-    ROS_INFO_STREAM("Actions: " << action_.transpose());
+    std::stringstream ss;
+    ss << "Actions: ";
+    for (int i = 0; i < numActions_; ++i) {
+        ss << action_[i] << " ";
+    }
+    RCLCPP_DEBUG(this->get_logger(), "%s", ss.str().c_str());
 }
 ```
 
-### 3. 在 RViz 中可视化观测
+### 3. 可视化观测
 
-将观测发布为自定义消息：
-```cpp
-// 在 run() 函数中
-std_msgs::Float64MultiArray obsMsg;
-obsMsg.data.assign(observations_.data(), 
-                   observations_.data() + observations_.size());
-obsPub_.publish(obsMsg);
+观测值已发布到 `/rl_observation` 话题。您可以监控它们：
+```bash
+ros2 topic echo /rl_observation
 ```
 
 ### 4. 记录数据以供分析
 
 ```bash
 # 记录所有相关话题
-rosbag record /sim2real_master_node/rbt_state \
-              /sim2real_master_node/mtr_state \
-              /imu/data \
-              /cmd_vel \
-              /pi_plus_all \
-              -O test_run.bag
+ros2 bag record /sim2real_master_node/rbt_state \
+                /sim2real_master_node/mtr_state \
+                /yesense_imu/imu \
+                /cmd_vel \
+                /pi_plus_all \
+                /rl_observation \
+                /rl_action
 
 # 稍后回放
-rosbag play test_run.bag
+ros2 bag play <bag_name>
 ```
 
----
+### 5. 性能分析
 
-## 测试最佳实践
-
-### 1. 单元测试
-
-在 `test/` 目录中创建测试文件：
-
-```cpp
-// test/test_observation.cpp
-#include <gtest/gtest.h>
-#include "hightorque_rl_inference/hightorque_rl_inference.h"
-
-TEST(InferenceDemoTest, ObservationSize)
-{
-    // 测试观测向量是否有正确的大小
-    auto nh = std::make_shared<ros::NodeHandle>();
-    InferenceDemo demo(nh);
-    
-    EXPECT_EQ(demo.getObservationSize(), 36);
-}
-
-// 添加到 CMakeLists.txt
-catkin_add_gtest(${PROJECT_NAME}_test test/test_observation.cpp)
-```
-
-### 2. 集成测试
-
-在机器人硬件上测试：
-1. 在 STANDBY 模式下启动
-2. 验证所有关节是否接收指令
-3. 检查意外振荡
-4. 测试状态转换
-5. 测试紧急停止
-
-### 3. 性能分析
-
+添加计时以测量推理性能：
 ```cpp
 #include <chrono>
 
-void InferenceDemo::updateAction()
+void HighTorqueRLInference::updateAction()
 {
     auto start = std::chrono::high_resolution_clock::now();
     
@@ -732,54 +688,47 @@ void InferenceDemo::updateAction()
     
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-    ROS_INFO("Inference time: %ld μs", duration.count());
+    RCLCPP_DEBUG(this->get_logger(), "Inference time: %ld μs", duration.count());
 }
 ```
 
 ---
 
-## 贡献
+## 测试最佳实践
 
-### 代码风格
+### 1. 先在 STANDBY 模式下测试
 
-- 遵循 [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html)
-- 使用有意义的变量名
-- 为所有函数添加 Doxygen 注释
-- 尽可能保持函数 < 50 行
+始终在 STANDBY 模式下开始测试（使用最小动作缩放 0.05）：
+1. 启动节点
+2. 按 `LT + RT + START` 进入 STANDBY
+3. 观察机器人行为
+4. 检查意外运动
+5. 验证所有关节是否接收指令
 
-### 提交消息
+### 2. 渐进式测试
 
+1. 从低 `action_scale` 开始（0.3-0.5）
+2. 测试基本站立/平衡
+3. 逐渐增加 `action_scale`
+4. 首先以慢速测试速度指令
+5. 只有在 STANDBY 测试通过后才切换到 RUNNING 模式
+
+### 3. 监控话题
+
+使用这些命令监控系统：
+```bash
+# 检查话题频率
+ros2 topic hz /sim2real_master_node/rbt_state
+ros2 topic hz /pi_plus_all
+
+# 监控关节指令
+ros2 topic echo /pi_plus_all
+
+# 检查观测值
+ros2 topic echo /rl_observation
 ```
-[组件] 简短描述
-
-详细解释更改了什么以及为什么。
-
-Fixes #issue_number
-```
-
-示例：
-```
-[Observation] 向观测空间添加基座线速度
-
-- 添加了 baseVelSub_ 订阅者
-- 更新了 updateObservation() 以包含线速度
-- 将 num_single_obs 增加到 39
-
-Fixes #42
-```
-
-### Pull Request 流程
-
-1. Fork 仓库
-2. 创建特性分支：`git checkout -b feature/your-feature`
-3. 进行更改并彻底测试
-4. 更新文档
-5. 使用清晰的消息提交
-6. 推送到您的 fork
-7. 打开带有描述的 pull request
 
 ---
 
 **高擎机电（HighTorque Robotics）**  
-**最后更新**：2025年11月
-
+**最后更新**：2025年12月

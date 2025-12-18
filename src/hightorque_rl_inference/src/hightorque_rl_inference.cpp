@@ -110,6 +110,13 @@ namespace hightorque_rl_inference
           stateReceived_(false),
           imuReceived_(false)
     {
+        RCLCPP_INFO(this->get_logger(), "=== 初始化多线程回调组 / Initializing Multi-threaded Callback Groups ===");
+        
+        // 创建三个独立的回调组，允许并行处理
+        // Create three independent callback groups for parallel processing
+        sensorCallbackGroup_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        controlCallbackGroup_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        commandCallbackGroup_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
         RCLCPP_INFO(this->get_logger(), "=== Loading configuration from YAML ===");
 
         std::string pkgPath = ament_index_cpp::get_package_share_directory("hightorque_rl_inference");
@@ -246,14 +253,15 @@ namespace hightorque_rl_inference
 
     bool HighTorqueRLInference::init()
     {
+        RCLCPP_INFO(this->get_logger(), "=== 初始化发布者和订阅者 / Initializing Publishers and Subscribers ===");
+        
+        // ===== 发布者 / Publishers =====
         std::string presetTopic = "/" + modelType_ + "_preset";
-        // auto presetQos = rclcpp::QoS(10).reliable().durability_volatile();
         auto presetQos = rclcpp::QoS(10);
         presetPub_ = this->create_publisher<std_msgs::msg::String>(presetTopic, presetQos);
 
         std::string topicName = "/" + modelType_ + "_all";
         auto cmdQos = rclcpp::QoS(1000).best_effort().durability_volatile();
-        
         jointCmdPub_ = this->create_publisher<sensor_msgs::msg::JointState>(topicName, cmdQos);
         
         std::string obsTopicName = "/rl_observation";
@@ -263,32 +271,57 @@ namespace hightorque_rl_inference
         std::string actionTopicName = "/rl_action";
         actionPub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(actionTopicName, obsQos);
 
+        // ===== 订阅者（分配到不同的回调组） / Subscribers (assigned to different callback groups) =====
+        
+        // 传感器数据订阅者 - 使用sensorCallbackGroup_（高优先级）
+        // Sensor data subscribers - use sensorCallbackGroup_ (high priority)
+        auto sensorSubOptions = rclcpp::SubscriptionOptions();
+        sensorSubOptions.callback_group = sensorCallbackGroup_;
+        
         robotStateSub_ = this->create_subscription<sensor_msgs::msg::JointState>(
             "/sim2real_master_node/rbt_state", 100,
-            std::bind(&HighTorqueRLInference::robotStateCallback, this, std::placeholders::_1));
+            std::bind(&HighTorqueRLInference::robotStateCallback, this, std::placeholders::_1),
+            sensorSubOptions);
+            
         motorStateSub_ = this->create_subscription<sensor_msgs::msg::JointState>(
             "/sim2real_master_node/mtr_state", 100,
-            std::bind(&HighTorqueRLInference::motorStateCallback, this, std::placeholders::_1));
+            std::bind(&HighTorqueRLInference::motorStateCallback, this, std::placeholders::_1),
+            sensorSubOptions);
+            
         imuSub_ = this->create_subscription<sensor_msgs::msg::Imu>(
             "/yesense_imu/imu", 100,
-            std::bind(&HighTorqueRLInference::imuCallback, this, std::placeholders::_1));
+            std::bind(&HighTorqueRLInference::imuCallback, this, std::placeholders::_1),
+            sensorSubOptions);
+
+        // 指令输入订阅者 - 使用commandCallbackGroup_
+        // Command input subscribers - use commandCallbackGroup_
+        auto commandSubOptions = rclcpp::SubscriptionOptions();
+        commandSubOptions.callback_group = commandCallbackGroup_;
+        
         cmdVelSub_ = this->create_subscription<geometry_msgs::msg::Twist>(
             "/cmd_vel", 50,
-            std::bind(&HighTorqueRLInference::cmdVelCallback, this, std::placeholders::_1));
+            std::bind(&HighTorqueRLInference::cmdVelCallback, this, std::placeholders::_1),
+            commandSubOptions);
 
         std::string joy_topic = "/joy";
         this->declare_parameter<std::string>("joy_topic", joy_topic);
         this->get_parameter("joy_topic", joy_topic);
         joySub_ = this->create_subscription<sensor_msgs::msg::Joy>(
             joy_topic, 10,
-            std::bind(&HighTorqueRLInference::joyCallback, this, std::placeholders::_1));
+            std::bind(&HighTorqueRLInference::joyCallback, this, std::placeholders::_1),
+            commandSubOptions);
 
+        // ===== 服务客户端 / Service Client =====
         rlPathClient_ = this->create_client<sim2real_msg_ros2::srv::Common>("/develop/rl_path");
 
+        // ===== 加载推理策略 / Load Inference Policy =====
         if (!loadPolicy())
         {
+            RCLCPP_ERROR(this->get_logger(), "策略加载失败 / Policy loading failed");
             return false;
         }
+        
+        RCLCPP_INFO(this->get_logger(), "初始化完成 / Initialization completed");
         return true;
     }
 
@@ -352,34 +385,57 @@ namespace hightorque_rl_inference
             observations_.resize(numSingleObs_);
         }
 
-        step_ += 1.0 / stepsPeriod_;
+        // 更新步态相位（线程安全）
+        // Update gait phase (thread-safe)
+        {
+            std::lock_guard<std::mutex> lock(stepMutex_);
+            step_ += 1.0 / stepsPeriod_;
+        }
 
         observations_[0] = currentState_ == STANDBY ? 1.0 : std::sin(2 * M_PI * step_);
         observations_[1] = currentState_ == STANDBY ? -1.0 : std::cos(2 * M_PI * step_);
 
-        double cmdX = currentState_ == STANDBY ? 0.0 : std::clamp(command_[0], cmdVelXMin_, cmdVelXMax_);
-        double cmdY = currentState_ == STANDBY ? 0.0 : std::clamp(command_[1], cmdVelYMin_, cmdVelYMax_);
-        double cmdYaw = currentState_ == STANDBY ? 0.0 : std::clamp(command_[2], cmdVelYawMin_, cmdVelYawMax_);
+        // 读取速度指令（线程安全）
+        // Read velocity commands (thread-safe)
+        Eigen::Vector3d cmd;
+        {
+            std::lock_guard<std::mutex> lock(commandMutex_);
+            cmd = command_;
+        }
+        
+        double cmdX = currentState_ == STANDBY ? 0.0 : std::clamp(cmd[0], cmdVelXMin_, cmdVelXMax_);
+        double cmdY = currentState_ == STANDBY ? 0.0 : std::clamp(cmd[1], cmdVelYMin_, cmdVelYMax_);
+        double cmdYaw = currentState_ == STANDBY ? 0.0 : std::clamp(cmd[2], cmdVelYawMin_, cmdVelYawMax_);
 
         observations_[2] = cmdX * cmdLinVelScale_ * (cmdX < 0 ? 0.5 : 1.0);
         observations_[3] = cmdY * cmdLinVelScale_;
         observations_[4] = cmdYaw * cmdAngVelScale_;
-        std::unique_lock<std::shared_timed_mutex> lk(mutex_);
 
-        observations_.segment(5, numActions_) = robotJointPositions_ * rbtLinPosScale_;
+        // 读取关节状态（线程安全）
+        // Read joint states (thread-safe)
+        {
+            std::lock_guard<std::mutex> lock(robotStateMutex_);
+            observations_.segment(5, numActions_) = robotJointPositions_ * rbtLinPosScale_;
+            observations_.segment(17, numActions_) = robotJointVelocities_ * rbtLinVelScale_;
+        }
 
-        observations_.segment(17, numActions_) = robotJointVelocities_ * rbtLinVelScale_;
-        lk.unlock();
+        // 读取IMU数据（线程安全）
+        // Read IMU data (thread-safe)
+        {
+            std::lock_guard<std::mutex> lock(imuMutex_);
+            observations_.segment(29, 3) = baseAngVel_ * rbtAngVelScale_;
+            observations_.segment(32, 3) = eulerAngles_;
+        }
 
-        observations_.segment(29, 3) = baseAngVel_ * rbtAngVelScale_;
-
-        observations_.segment(32, 3) = eulerAngles_;
-
+        // 裁剪观测值
+        // Clip observations
         for (int i = 0; i < numSingleObs_; ++i)
         {
             observations_[i] = std::clamp(observations_[i], -clipObs_, clipObs_);
         }
 
+        // 更新历史观测
+        // Update observation history
         histObs_.push_back(observations_);
         histObs_.pop_front();
     }
@@ -472,7 +528,9 @@ namespace hightorque_rl_inference
             return;
         }
 
-        std::unique_lock<std::shared_timed_mutex> lk(mutex_);
+        // 线程安全地更新机器人关节状态
+        // Thread-safe update of robot joint states
+        std::lock_guard<std::mutex> lock(robotStateMutex_);
         for (int i = 0; i < numActions_; ++i)
         {
             robotJointPositions_[i] = msg->position[i];
@@ -482,9 +540,9 @@ namespace hightorque_rl_inference
             }
         }
 
-        if (!stateReceived_)
+        if (!stateReceived_.load())
         {
-            stateReceived_ = true;
+            stateReceived_.store(true);
         }
     }
 
@@ -495,6 +553,9 @@ namespace hightorque_rl_inference
             return;
         }
 
+        // 线程安全地更新电机关节状态
+        // Thread-safe update of motor joint states
+        std::lock_guard<std::mutex> lock(motorStateMutex_);
         for (int i = 0; i < numActions_; ++i)
         {
             int policyIdx = actualToPolicyMap_[i];
@@ -508,30 +569,39 @@ namespace hightorque_rl_inference
             }
         }
 
-        if (!stateReceived_)
+        if (!stateReceived_.load())
         {
-            stateReceived_ = true;
+            stateReceived_.store(true);
         }
     }
 
     void HighTorqueRLInference::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
     {
+        // 线程安全地更新IMU数据
+        // Thread-safe update of IMU data
+        std::lock_guard<std::mutex> lock(imuMutex_);
+        
         quat_.x() = msg->orientation.x;
         quat_.y() = msg->orientation.y;
         quat_.z() = msg->orientation.z;
         quat_.w() = msg->orientation.w;
         quat2euler();
+        
         baseAngVel_[0] = msg->angular_velocity.x;
         baseAngVel_[1] = msg->angular_velocity.y;
         baseAngVel_[2] = msg->angular_velocity.z;
-        if (!imuReceived_)
+        
+        if (!imuReceived_.load())
         {
-            imuReceived_ = true;
+            imuReceived_.store(true);
         }
     }
 
     void HighTorqueRLInference::cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
     {
+        // 线程安全地更新速度指令
+        // Thread-safe update of velocity commands
+        std::lock_guard<std::mutex> lock(commandMutex_);
         command_[0] = std::clamp(msg->linear.x, cmdVelXMin_, cmdVelXMax_);
         command_[1] = std::clamp(msg->linear.y, cmdVelYMin_, cmdVelYMax_);
         command_[2] = std::clamp(msg->angular.z, cmdVelYawMin_, cmdVelYawMax_);
@@ -553,10 +623,17 @@ namespace hightorque_rl_inference
         bool triggerReset = ltPressed && rtPressed && startPressed;
         bool triggerToggle = ltPressed && rtPressed && lbPressed;
 
-        if (triggerReset && (this->now() - lastTrigger_).seconds() > 1.0)
+        if (triggerReset)
         {
-            if (currentState_ == NOT_READY)
+            bool shouldTrigger = false;
             {
+                std::lock_guard<std::mutex> lock(triggerMutex_);
+                shouldTrigger = (this->now() - lastTrigger_).seconds() > 1.0;
+            }
+            
+            if (shouldTrigger && currentState_ == NOT_READY)
+            {
+                std::lock_guard<std::mutex> lock(triggerMutex_);
                 lastTrigger_ = this->now();
 
                 double reset_duration = 2.0;
@@ -573,10 +650,17 @@ namespace hightorque_rl_inference
             }
         }
 
-        if (triggerToggle && (this->now() - lastTrigger_).seconds() > 1.0)
+        if (triggerToggle)
         {
-            if (currentState_ == STANDBY || currentState_ == RUNNING)
+            bool shouldTrigger = false;
             {
+                std::lock_guard<std::mutex> lock(triggerMutex_);
+                shouldTrigger = (this->now() - lastTrigger_).seconds() > 1.0;
+            }
+            
+            if (shouldTrigger && (currentState_ == STANDBY || currentState_ == RUNNING))
+            {
+                std::lock_guard<std::mutex> lock(triggerMutex_);
                 lastTrigger_ = this->now();
 
                 if (currentState_ == STANDBY)
@@ -591,9 +675,89 @@ namespace hightorque_rl_inference
         }
     }
 
+    /**
+     * @brief 控制循环定时器回调 - 在独立线程中运行
+     *        Control loop timer callback - runs in a dedicated thread
+     * 
+     * 此函数负责：
+     * 1. 更新观测值
+     * 2. 运行RKNN推理生成动作
+     * 3. 发布关节指令
+     * 
+     * This function is responsible for:
+     * 1. Updating observations
+     * 2. Running RKNN inference to generate actions
+     * 3. Publishing joint commands
+     */
+    void HighTorqueRLInference::controlLoopCallback()
+    {
+        // 如果系统未就绪，跳过此次循环
+        // Skip this iteration if system is not ready
+        if (currentState_ == NOT_READY)
+        {
+            return;
+        }
+
+        // ===== 1. 更新观测值 / Update Observations =====
+        updateObservation();
+        
+        // 发布观测值（用于调试和可视化）
+        // Publish observations (for debugging and visualization)
+        if (obsPub_)
+        {
+            std_msgs::msg::Float64MultiArray obsMsg;
+            obsMsg.layout.dim.resize(1);
+            obsMsg.layout.dim[0].label = "observation";
+            obsMsg.layout.dim[0].size = observations_.size();
+            obsMsg.layout.dim[0].stride = observations_.size();
+            obsMsg.data.resize(observations_.size());
+            for (size_t i = 0; i < observations_.size(); ++i)
+            {
+                obsMsg.data[i] = observations_[i];
+            }
+            obsPub_->publish(obsMsg);
+        }
+        
+        // ===== 2. 运行推理生成动作 / Run Inference to Generate Actions =====
+        updateAction();
+
+        // ===== 3. 发布关节指令 / Publish Joint Commands =====
+        sensor_msgs::msg::JointState msg;
+        msg.header.stamp = this->now();
+        msg.header.frame_id = "";
+
+        msg.name.resize(22);
+        msg.position.resize(22);
+        msg.velocity.resize(22);
+        msg.effort.resize(22);
+
+        // 根据当前状态调整动作缩放
+        // Adjust action scaling based on current state
+        double scale = (currentState_ == RUNNING) ? actionScale_ : 0.05;
+        
+        // 填充关节指令（前12个是控制关节，后10个为0）
+        // Fill joint commands (first 12 are control joints, last 10 are zeros)
+        for (int i = 0; i < 12; ++i)
+        {
+            msg.name[i] = "test" + std::to_string(i + 1);
+            msg.position[i] = action_[i] * scale;
+            msg.velocity[i] = 0.0;
+            msg.effort[i] = 0.0;
+        }
+        for (int i = 12; i < 22; ++i)
+        {
+            msg.name[i] = "test" + std::to_string(i + 1);
+            msg.position[i] = 0.0;
+            msg.velocity[i] = 0.0;
+            msg.effort[i] = 0.0;
+        }
+
+        jointCmdPub_->publish(msg);
+    }
+
     void HighTorqueRLInference::run()
     {
-        RCLCPP_INFO(this->get_logger(), "等待外部service /develop/rl_path 可用...");
+        RCLCPP_INFO(this->get_logger(), "=== 等待外部service /develop/rl_path 可用 / Waiting for service ===");
         if (!rlPathClient_->wait_for_service(std::chrono::seconds(10)))
         {
             RCLCPP_ERROR(this->get_logger(), "Service /develop/rl_path 超时未响应");
@@ -626,70 +790,20 @@ namespace hightorque_rl_inference
             return;
         }
 
-        RCLCPP_INFO(this->get_logger(), "开始主循环...");
-        rclcpp::Rate rate(rlCtrlFreq_);
+        // ===== 创建控制循环定时器（在独立线程中运行）/ Create Control Loop Timer =====
+        RCLCPP_INFO(this->get_logger(), "=== 启动多线程控制循环 / Starting Multi-threaded Control Loop ===");
+        RCLCPP_INFO(this->get_logger(), "控制频率: %.1f Hz", rlCtrlFreq_);
+        
+        auto period = std::chrono::duration<double>(1.0 / rlCtrlFreq_);
+        controlTimer_ = this->create_wall_timer(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(period),
+            std::bind(&HighTorqueRLInference::controlLoopCallback, this),
+            controlCallbackGroup_);
 
-        while (rclcpp::ok() && !quit_)
-        {
-            rclcpp::spin_some(this->get_node_base_interface());
-
-            if (currentState_ == NOT_READY)
-            {
-                rate.sleep();
-                continue;
-            }
-
-            rclcpp::spin_some(this->get_node_base_interface());
-            
-            updateObservation();
-            
-            std_msgs::msg::Float64MultiArray obsMsg;
-            obsMsg.layout.dim.resize(1);
-            obsMsg.layout.dim[0].label = "observation";
-            obsMsg.layout.dim[0].size = observations_.size();
-            obsMsg.layout.dim[0].stride = observations_.size();
-            obsMsg.data.resize(observations_.size());
-            for (size_t i = 0; i < observations_.size(); ++i)
-            {
-                obsMsg.data[i] = observations_[i];
-            }
-            obsPub_->publish(obsMsg);
-            
-            rclcpp::spin_some(this->get_node_base_interface());
-            
-            updateAction();
-
-            sensor_msgs::msg::JointState msg;
-            msg.header.stamp = this->now();
-            msg.header.frame_id = "";
-
-            msg.name.resize(22);
-            msg.position.resize(22);
-            msg.velocity.resize(22);
-            msg.effort.resize(22);
-
-            double scale = (currentState_ == RUNNING) ? actionScale_ : 0.05;
-            // double scale = actionScale_;
-            
-            for (int i = 0; i < 12; ++i)
-            {
-                msg.name[i] = "test" + std::to_string(i + 1);
-                msg.position[i] = action_[i] * scale;
-                msg.velocity[i] = 0.0;
-                msg.effort[i] = 0.0;
-            }
-            for (int i = 12; i < 22; ++i)
-            {
-                msg.name[i] = "test" + std::to_string(i + 1);
-                msg.position[i] = 0.0;
-                msg.velocity[i] = 0.0;
-                msg.effort[i] = 0.0;
-            }
-           
-
-            jointCmdPub_->publish(msg);
-            rate.sleep();
-        }
+        RCLCPP_INFO(this->get_logger(), "多线程控制循环已启动！");
+        RCLCPP_INFO(this->get_logger(), "- 传感器数据回调：独立线程");
+        RCLCPP_INFO(this->get_logger(), "- 控制循环：独立线程 (%.1f Hz)", rlCtrlFreq_);
+        RCLCPP_INFO(this->get_logger(), "- 指令输入回调：独立线程");
     }
 
 } // namespace hightorque_rl_inference

@@ -7,6 +7,7 @@
 #include <sensor_msgs/msg/joy.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include "sim2real_msg_ros2/srv/common.hpp"
 #include <Eigen/Dense>
 #include <memory>
@@ -41,10 +42,12 @@ namespace hightorque_rl_inference
             void motorStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
             void imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg);
             void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
-            static void joyCallback(const sensor_msgs::msg::Joy::SharedPtr msg);
+            void joyCallback(const sensor_msgs::msg::Joy::SharedPtr msg);
 
             rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr jointCmdPub_;
             rclcpp::Publisher<std_msgs::msg::String>::SharedPtr presetPub_;
+            rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr obsPub_;
+            rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr actionPub_;
             rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr robotStateSub_;
             rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr motorStateSub_;
             rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imuSub_;
@@ -66,6 +69,13 @@ namespace hightorque_rl_inference
             double rbtLinVelScale_;
             double rbtAngVelScale_;
             double actionScale_;
+
+            double cmdVelXMin_;
+            double cmdVelXMax_;
+            double cmdVelYMin_;
+            double cmdVelYMax_;
+            double cmdVelYawMin_;
+            double cmdVelYawMax_;
 
             std::vector<float> clipActionsLower_;
             std::vector<float> clipActionsUpper_;
@@ -101,6 +111,7 @@ namespace hightorque_rl_inference
             bool quit_;
             bool stateReceived_;
             bool imuReceived_;
+            rclcpp::Time lastTrigger_;
 
 #ifdef PLATFORM_ARM
             rknn_context ctx_{};

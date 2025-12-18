@@ -36,9 +36,6 @@
 namespace hightorque_rl_inference
 {
 
-    static std::atomic<bool> gJoyReady(false);
-    static sensor_msgs::msg::Joy gJoyMsg;
-
     /**
      * @brief Load data from file at specific offset
      *        从文件的特定偏移量加载数据
@@ -149,6 +146,14 @@ namespace hightorque_rl_inference
             rbtAngVelScale_ = config["rbt_ang_vel_scale"].as<double>(1.0);
             actionScale_ = config["action_scale"].as<double>(1.0);
 
+            // 读取速度限制参数
+            cmdVelXMin_ = config["cmd_vel_x_min"].as<double>(-0.55);
+            cmdVelXMax_ = config["cmd_vel_x_max"].as<double>(0.55);
+            cmdVelYMin_ = config["cmd_vel_y_min"].as<double>(-0.30);
+            cmdVelYMax_ = config["cmd_vel_y_max"].as<double>(0.30);
+            cmdVelYawMin_ = config["cmd_vel_yaw_min"].as<double>(-2.00);
+            cmdVelYawMax_ = config["cmd_vel_yaw_max"].as<double>(2.00);
+
             // 读取动作限制
             std::vector<double> clipLower = config["clip_actions_lower"].as<std::vector<double>>();
             std::vector<double> clipUpper = config["clip_actions_upper"].as<std::vector<double>>();
@@ -190,31 +195,6 @@ namespace hightorque_rl_inference
         {
             RCLCPP_ERROR(this->get_logger(), "YAML parsing error: %s", e.what());
             RCLCPP_ERROR(this->get_logger(), "Using default parameters from original launch file");
-
-            numActions_ = 12;
-            numSingleObs_ = 36;
-            frameStack_ = 1;
-            rlCtrlFreq_ = 100.0;
-            clipObs_ = 18.0;
-            cmdLinVelScale_ = 1.0;
-            cmdAngVelScale_ = 1.25;
-            rbtLinPosScale_ = 1.0;
-            rbtLinVelScale_ = 1.0;
-            rbtAngVelScale_ = 1.0;
-            actionScale_ = 1.0;
-            policyPath_ = pkgPath + "/policy/policy_0322_12dof_4000.rknn";
-            modelType_ = "pi_plus";
-            stepsPeriod_ = 60.0;
-
-            // launch 文件中的正确限位
-            std::vector<float> lower = {-1.00, -0.40, -0.60, -1.30, -0.75, -0.30, -1.00, -0.40, -0.60, -1.30, -0.75, -0.30};
-            std::vector<float> upper = {1.00, 0.40, 0.60, 1.30, 0.75, 0.30, 1.00, 0.40, 0.60, 1.30, 0.75, 0.30};
-            clipActionsLower_ = lower;
-            clipActionsUpper_ = upper;
-
-            // launch 文件中的电机配置
-            motorDirection_ = {1, 1, -1, -1, 1, 1, -1, 1, -1, 1, -1, 1};
-            actualToPolicyMap_ = {5, 4, 3, 2, 1, 0, 11, 10, 9, 8, 7, 6};
         }
 
         robotJointPositions_ = Eigen::VectorXd::Zero(numActions_);
@@ -254,17 +234,14 @@ namespace hightorque_rl_inference
         this->declare_parameter<double>("steps_period", 60.0);
         this->get_parameter("steps_period", stepsPeriod_);
         step_ = 0.0;
+        lastTrigger_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
     }
 
     HighTorqueRLInference::~HighTorqueRLInference()
     {
         quit_ = true;
-#ifdef PLATFORM_ARM
         if (policyLoaded_)
-        {
             rknn_destroy(ctx_);
-        }
-#endif
     }
 
     bool HighTorqueRLInference::init()
@@ -278,6 +255,13 @@ namespace hightorque_rl_inference
         auto cmdQos = rclcpp::QoS(1000).best_effort().durability_volatile();
         
         jointCmdPub_ = this->create_publisher<sensor_msgs::msg::JointState>(topicName, cmdQos);
+        
+        std::string obsTopicName = "/rl_observation";
+        auto obsQos = rclcpp::QoS(100);
+        obsPub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(obsTopicName, obsQos);
+        
+        std::string actionTopicName = "/rl_action";
+        actionPub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(actionTopicName, obsQos);
 
         robotStateSub_ = this->create_subscription<sensor_msgs::msg::JointState>(
             "/sim2real_master_node/rbt_state", 100,
@@ -297,7 +281,7 @@ namespace hightorque_rl_inference
         this->get_parameter("joy_topic", joy_topic);
         joySub_ = this->create_subscription<sensor_msgs::msg::Joy>(
             joy_topic, 10,
-            &HighTorqueRLInference::joyCallback);
+            std::bind(&HighTorqueRLInference::joyCallback, this, std::placeholders::_1));
 
         rlPathClient_ = this->create_client<sim2real_msg_ros2::srv::Common>("/develop/rl_path");
 
@@ -310,7 +294,6 @@ namespace hightorque_rl_inference
 
     bool HighTorqueRLInference::loadPolicy()
     {
-#ifdef PLATFORM_ARM
         int modelSize = 0;
         unsigned char* modelData = readFileData(policyPath_.c_str(), &modelSize);
         if (!modelData)
@@ -340,7 +323,6 @@ namespace hightorque_rl_inference
         rknnOutputs_[0].want_float = true;
         policyLoaded_ = true;
         return true;
-#endif
     }
 
     /**
@@ -375,9 +357,9 @@ namespace hightorque_rl_inference
         observations_[0] = currentState_ == STANDBY ? 1.0 : std::sin(2 * M_PI * step_);
         observations_[1] = currentState_ == STANDBY ? -1.0 : std::cos(2 * M_PI * step_);
 
-        double cmdX = currentState_ == STANDBY ? 0.0 : command_[0];
-        double cmdY = currentState_ == STANDBY ? 0.0 : command_[1];
-        double cmdYaw = currentState_ == STANDBY ? 0.0 : command_[2];
+        double cmdX = currentState_ == STANDBY ? 0.0 : std::clamp(command_[0], cmdVelXMin_, cmdVelXMax_);
+        double cmdY = currentState_ == STANDBY ? 0.0 : std::clamp(command_[1], cmdVelYMin_, cmdVelYMax_);
+        double cmdYaw = currentState_ == STANDBY ? 0.0 : std::clamp(command_[2], cmdVelYawMin_, cmdVelYawMax_);
 
         observations_[2] = cmdX * cmdLinVelScale_ * (cmdX < 0 ? 0.5 : 1.0);
         observations_[3] = cmdY * cmdLinVelScale_;
@@ -445,6 +427,21 @@ namespace hightorque_rl_inference
         }
 
         rknn_outputs_release(ctx_, ioNum_.n_output, rknnOutputs_);
+
+        if (actionPub_)
+        {
+            std_msgs::msg::Float64MultiArray actionMsg;
+            actionMsg.layout.dim.resize(1);
+            actionMsg.layout.dim[0].label = "action";
+            actionMsg.layout.dim[0].size = action_.size();
+            actionMsg.layout.dim[0].stride = action_.size();
+            actionMsg.data.resize(action_.size());
+            for (int i = 0; i < action_.size(); ++i)
+            {
+                actionMsg.data[i] = action_[i];
+            }
+            actionPub_->publish(actionMsg);
+        }
     }
 
     void HighTorqueRLInference::quat2euler()
@@ -535,18 +532,63 @@ namespace hightorque_rl_inference
 
     void HighTorqueRLInference::cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
     {
-        command_[0] = msg->linear.x;
-        command_[1] = msg->linear.y;
-        command_[2] = msg->angular.z;
-        std::clamp(command_[0], -0.55, 0.55);
-        std::clamp(command_[1], -0.3, 0.3);
-        std::clamp(command_[2], -2.0, 2.0);
+        command_[0] = std::clamp(msg->linear.x, cmdVelXMin_, cmdVelXMax_);
+        command_[1] = std::clamp(msg->linear.y, cmdVelYMin_, cmdVelYMax_);
+        command_[2] = std::clamp(msg->angular.z, cmdVelYawMin_, cmdVelYawMax_);
     }
 
     void HighTorqueRLInference::joyCallback(const sensor_msgs::msg::Joy::SharedPtr msg)
     {
-        gJoyMsg = *msg;
-        gJoyReady.store(true);
+        int axis2 = 2, axis5 = 5, btn_start = 7, btn_lb = 4;
+        this->get_parameter_or<int>("joy_axis2", axis2, axis2);
+        this->get_parameter_or<int>("joy_axis5", axis5, axis5);
+        this->get_parameter_or<int>("joy_button_start", btn_start, btn_start);
+        this->get_parameter_or<int>("joy_button_lb", btn_lb, btn_lb);
+
+        bool ltPressed = (axis2 >= 0 && axis2 < (int)msg->axes.size()) && (std::abs(msg->axes[axis2]) > 0.8);
+        bool rtPressed = (axis5 >= 0 && axis5 < (int)msg->axes.size()) && (std::abs(msg->axes[axis5]) > 0.8);
+        bool startPressed = (btn_start >= 0 && btn_start < (int)msg->buttons.size()) && (msg->buttons[btn_start] == 1);
+        bool lbPressed = (btn_lb >= 0 && btn_lb < (int)msg->buttons.size()) && (msg->buttons[btn_lb] == 1);
+
+        bool triggerReset = ltPressed && rtPressed && startPressed;
+        bool triggerToggle = ltPressed && rtPressed && lbPressed;
+
+        if (triggerReset && (this->now() - lastTrigger_).seconds() > 1.0)
+        {
+            if (currentState_ == NOT_READY)
+            {
+                lastTrigger_ = this->now();
+
+                double reset_duration = 2.0;
+                this->get_parameter_or<double>("reset_duration", reset_duration, reset_duration);
+
+                std_msgs::msg::String preset;
+                preset.data = "zero:" + std::to_string(reset_duration);
+
+                presetPub_->publish(preset);
+                auto sleep_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::duration<double>(reset_duration));
+                rclcpp::sleep_for(sleep_duration);
+                currentState_ = STANDBY;
+            }
+        }
+
+        if (triggerToggle && (this->now() - lastTrigger_).seconds() > 1.0)
+        {
+            if (currentState_ == STANDBY || currentState_ == RUNNING)
+            {
+                lastTrigger_ = this->now();
+
+                if (currentState_ == STANDBY)
+                {
+                    currentState_ = RUNNING;
+                }
+                else if (currentState_ == RUNNING)
+                {
+                    currentState_ = STANDBY;
+                }
+            }
+        }
     }
 
     void HighTorqueRLInference::run()
@@ -586,71 +628,10 @@ namespace hightorque_rl_inference
 
         RCLCPP_INFO(this->get_logger(), "开始主循环...");
         rclcpp::Rate rate(rlCtrlFreq_);
-        static rclcpp::Time lastTrigger(0, 0, RCL_ROS_TIME);
 
         while (rclcpp::ok() && !quit_)
         {
             rclcpp::spin_some(this->get_node_base_interface());
-
-            if (currentState_ != NOT_READY)
-            {
-                updateObservation();
-                updateAction();
-            }
-
-            if (gJoyReady.load())
-            {
-                int axis2 = 2, axis5 = 5, btn_start = 7, btn_lb = 4;
-                this->get_parameter_or<int>("joy_axis2", axis2, axis2);
-                this->get_parameter_or<int>("joy_axis5", axis5, axis5);
-                this->get_parameter_or<int>("joy_button_start", btn_start, btn_start);
-                this->get_parameter_or<int>("joy_button_lb", btn_lb, btn_lb);
-
-                bool ltPressed = (axis2 >= 0 && axis2 < (int)gJoyMsg.axes.size()) && (std::abs(gJoyMsg.axes[axis2]) > 0.8);
-                bool rtPressed = (axis5 >= 0 && axis5 < (int)gJoyMsg.axes.size()) && (std::abs(gJoyMsg.axes[axis5]) > 0.8);
-                bool startPressed = (btn_start >= 0 && btn_start < (int)gJoyMsg.buttons.size()) && (gJoyMsg.buttons[btn_start] == 1);
-                bool lbPressed = (btn_lb >= 0 && btn_lb < (int)gJoyMsg.buttons.size()) && (gJoyMsg.buttons[btn_lb] == 1);
-
-                bool triggerReset = ltPressed && rtPressed && startPressed;
-                bool triggerToggle = ltPressed && rtPressed && lbPressed;
-
-                if (triggerReset && (this->now() - lastTrigger).seconds() > 1.0)
-                {
-                    if (currentState_ == NOT_READY)
-                    {
-                        lastTrigger = this->now();
-
-                        double reset_duration = 2.0;
-                        this->get_parameter_or<double>("reset_duration", reset_duration, reset_duration);
-
-                        std_msgs::msg::String preset;
-                        preset.data = "zero:" + std::to_string(reset_duration);
-
-                        presetPub_->publish(preset);
-                        auto sleep_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            std::chrono::duration<double>(reset_duration));
-                        rclcpp::sleep_for(sleep_duration);
-                        currentState_ = STANDBY;
-                    }
-                }
-
-                if (triggerToggle && (this->now() - lastTrigger).seconds() > 1.0)
-                {
-                    if (currentState_ == STANDBY || currentState_ == RUNNING)
-                    {
-                        lastTrigger = this->now();
-
-                        if (currentState_ == STANDBY)
-                        {
-                            currentState_ = RUNNING;
-                        }
-                        else if (currentState_ == RUNNING)
-                        {
-                            currentState_ = STANDBY;
-                        }
-                    }
-                }
-            }
 
             if (currentState_ == NOT_READY)
             {
@@ -658,21 +639,53 @@ namespace hightorque_rl_inference
                 continue;
             }
 
+            rclcpp::spin_some(this->get_node_base_interface());
+            
+            updateObservation();
+            
+            std_msgs::msg::Float64MultiArray obsMsg;
+            obsMsg.layout.dim.resize(1);
+            obsMsg.layout.dim[0].label = "observation";
+            obsMsg.layout.dim[0].size = observations_.size();
+            obsMsg.layout.dim[0].stride = observations_.size();
+            obsMsg.data.resize(observations_.size());
+            for (size_t i = 0; i < observations_.size(); ++i)
+            {
+                obsMsg.data[i] = observations_[i];
+            }
+            obsPub_->publish(obsMsg);
+            
+            rclcpp::spin_some(this->get_node_base_interface());
+            
+            updateAction();
+
             sensor_msgs::msg::JointState msg;
             msg.header.stamp = this->now();
             msg.header.frame_id = "";
 
+            msg.name.resize(22);
             msg.position.resize(22);
-            double scale = (currentState_ == RUNNING) ? actionScale_ : 0.05;
+            msg.velocity.resize(22);
+            msg.effort.resize(22);
 
+            double scale = (currentState_ == RUNNING) ? actionScale_ : 0.05;
+            // double scale = actionScale_;
+            
             for (int i = 0; i < 12; ++i)
             {
+                msg.name[i] = "test" + std::to_string(i + 1);
                 msg.position[i] = action_[i] * scale;
+                msg.velocity[i] = 0.0;
+                msg.effort[i] = 0.0;
             }
             for (int i = 12; i < 22; ++i)
             {
+                msg.name[i] = "test" + std::to_string(i + 1);
                 msg.position[i] = 0.0;
+                msg.velocity[i] = 0.0;
+                msg.effort[i] = 0.0;
             }
+           
 
             jointCmdPub_->publish(msg);
             rate.sleep();

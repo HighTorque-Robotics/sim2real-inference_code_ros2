@@ -97,6 +97,7 @@ install(DIRECTORY launch/
 
 install(FILES
   config_example.yaml
+  devel_control.yaml
   DESTINATION share/${PROJECT_NAME}
 )
 

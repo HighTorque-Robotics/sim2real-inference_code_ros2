@@ -767,7 +767,10 @@ namespace hightorque_rl_inference
         RCLCPP_INFO(this->get_logger(), "调用 /develop/rl_path service...");
         auto request = std::make_shared<sim2real_msg_ros2::srv::Common::Request>();
         request->enable = true;
-        request->str = "/home/hightorque/zy_workspace/sim2real_master_ros2/src/sim2real_master_ros2/src/sim2real_master/config/walk/devel_control.yaml";
+        // 使用相对路径：从当前包目录读取 devel_control.yaml
+        std::string pkgPath = ament_index_cpp::get_package_share_directory("hightorque_rl_inference");
+        request->str = pkgPath + "/devel_control.yaml";
+        RCLCPP_INFO(this->get_logger(), "加载配置文件: %s", request->str.c_str());
         auto result = rlPathClient_->async_send_request(request);
 
         if (rclcpp::spin_until_future_complete(this->get_node_base_interface(), result) == 
